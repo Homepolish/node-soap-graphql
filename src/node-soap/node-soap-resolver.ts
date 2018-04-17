@@ -23,18 +23,26 @@ type WsdlResultContent = WsdlTypeContent;
 
 type XsdTypeDefinition = { name: 'complexType', $name: string; children: XsdTypeDefinitionBody[] };
 
-type XsdTypeDefinitionBody = XsdSequence | XsdComplexType;
+type XsdTypeDefinitionBody = XsdSequence | XsdComplexType | XsdAttribute
 
 type XsdSequence = { name: 'sequence', children: XsdFieldDefinition[] };
-
 type XsdComplexType = { name: 'complexContent', children: XsdExtension[] };
 type XsdExtension = { name: 'extension'; $base: string; children: XsdSequence[] };
 
+type XsdAttribute = {
+  name: 'attribute',
+  $name: string,
+  $type: string,
+  $default: string,
+  $use: string,
+}
+
 type XsdFieldDefinition = {
-    $name: string;
-    $targetNamespace: string;
-    $type: string;
-    $maxOccurs?: 'unbounded' | string;
+  $name: string;
+  $targetNamespace: string;
+  $type: string;
+  $ref: string;
+  $maxOccurs?: 'unbounded' | string;
 };
 
 export class NodeSoapWsdlResolver {
@@ -243,28 +251,41 @@ export class NodeSoapWsdlResolver {
         let fields: XsdFieldDefinition[] = null;
         let baseTypeName: string = null;
 
-        const body: XsdTypeDefinitionBody = typeDefinition.children[0];
-
-        if (body.name === 'sequence') {
-            const sequence: XsdSequence = body;
-            fields = sequence.children || [];
+      fields = typeDefinition.children.map((body: XsdTypeDefinitionBody) => {
+        // const body: XsdTypeDefinitionBody = typeDefinition.children[0];
+        if (body.name === 'attribute') {
+          const attribute: XsdAttribute = body
+          return attribute
+        } else if (body.name === 'sequence') {
+          const sequence: XsdSequence = body;
+          return sequence.children || [];
         } else if (body.name === 'complexContent') {
-            const extension: XsdExtension = body.children[0];
-            const sequence: XsdSequence = extension.children[0];
-            baseTypeName = withoutNamespace(extension.$base);
-            fields = sequence.children || [];
+          const extension: XsdExtension = body.children[0];
+          const sequence: XsdSequence = extension.children[0];
+          baseTypeName = withoutNamespace(extension.$base);
+          return sequence.children || [];
         } else {
-            this.warn(() => `cannot parse fields for soap type '${typeName}', leaving fields empty`);
-            fields = [];
+          this.warn(() => `cannot parse fields for soap type '${typeName}', leaving fields empty`);
+          return [];
         }
+      })
 
-        const soapFields: SoapField[] = fields.map((field: XsdFieldDefinition) => {
-            return {
-                name: field.$name,
-                type: this.resolveWsdlNameToSoapType(field.$targetNamespace, withoutNamespace(field.$type), `field '${field.$name}' of soap type '${soapType.name}'`),
-                isList: !!field.$maxOccurs && field.$maxOccurs === 'unbounded',
-            }
-        });
+      const soapFields: SoapField[] = fields.map((field: XsdFieldDefinition) => {
+        if (field.$name) {
+          return {
+            name: field.$name,
+            type: this.resolveWsdlNameToSoapType(field.$targetNamespace, withoutNamespace(field.$type), `field '${field.$name}' of soap type '${soapType.name}'`),
+            isList: !!field.$maxOccurs && field.$maxOccurs === 'unbounded',
+          }
+        } else if (field.$ref) {
+          const name = withoutNamespace(field.$ref)
+          const [nameSpace, _] = field.$ref.split(':')
+          return {
+            ...parseWsdlFieldName(name),
+            type: this.resolveWsdlNameToSoapType(nameSpace, name, `field '${name}' of soap type '${soapType.name}'`),
+          }
+        }
+      });
 
         // @todo in XSD it is possible to inherit a type from a primitive ... may have to handle this
         const baseType: SoapObjectType = !baseTypeName ? null : <SoapObjectType>this.resolveWsdlNameToSoapType(namespace, baseTypeName, `base type of soap type '${soapType.name}'`);
